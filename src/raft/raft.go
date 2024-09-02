@@ -19,13 +19,14 @@ package raft
 
 import (
 	//	"bytes"
+	"math/rand"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	//	"6.824/labgob"
 	"6.824/labrpc"
 )
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -53,6 +54,12 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+const  (
+	Follower = 0
+	Cadiante = 1
+	Leader = 2
+)
+
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
@@ -63,7 +70,11 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	term int64
+	role int32
+	voteFor int64
+	LastLogsIndex int64
+	LastLogsTerm int64
 }
 
 // return currentTerm and whether this server
@@ -72,7 +83,13 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
+	defer rf.mu.Unlock()
 	// Your code here (2A).
+	rf.mu.Lock()
+	term = int(rf.term)
+	if rf.role == int32(Leader) {
+		isleader = true
+	}
 	return term, isleader
 }
 
@@ -143,6 +160,11 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term int32
+	CandiantedId int32
+	LastLogIndex int32
+	LastLogTerm int32
+
 }
 
 //
@@ -151,6 +173,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term int32
+	VoteGranted bool
 }
 
 //
@@ -158,6 +182,46 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+
+	reply := &RequestVoteReply{}
+	if args.Term < int32(rf.term) {
+		reply.Term = int32(rf.term)
+		return
+	}
+
+	if rf.role == Cadiante {
+		if args.Term > int32(rf.term) {
+			reply.VoteGranted = true
+			reply.Term = args.Term
+
+			rf.term = int64(args.Term)
+			rf.role = Follower
+			rf.voteFor = int64(args.CandiantedId)
+			return
+		}
+	}
+
+	if rf.role == Follower {
+		if rf.voteFor == -1 {
+			if rf.LastLogsIndex <= int64(args.LastLogIndex) && rf.LastLogsTerm <= int64(args.LastLogTerm) {
+				reply.Term = args.Term
+				reply.VoteGranted = true
+
+				rf.term = int64(args.Term)
+				rf.role = Follower
+				rf.voteFor = int64(args.CandiantedId)
+			}
+		} else {
+			if rf.term < int64(args.Term) {
+				reply.Term = args.Term
+				reply.VoteGranted = true
+
+				rf.term = int64(args.Term)
+				rf.role = Follower
+				rf.voteFor = int64(args.CandiantedId)
+			}
+		}
+	}
 }
 
 //
@@ -248,8 +312,19 @@ func (rf *Raft) ticker() {
 
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
-		// time.Sleep().
+		// time.Sleep().\
+		step := time.Duration(rand.Int()%10 *100)
+		time.Sleep(time.Millisecond*step)
 
+		if rf.role == Follower {
+			rf.mu.Lock()
+			rf.term += 1
+			rf.role = Cadiante
+			rf.mu.Unlock()
+			go func() {
+				rf.RequestVote()
+			}()
+		}
 	}
 }
 
