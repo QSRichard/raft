@@ -266,6 +266,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.term = args.Term
 			rf.role = Follower
 			rf.voteFor = args.LeaderId
+			rf.LastHeartBeatTime = time.Now().UnixMilli()
 
 			reply.Term = rf.term
 			reply.Success = true
@@ -288,7 +289,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			reply.Success = false
 		}
 	} else {
-		if rf.term < args.Term {
+		if rf.term <= args.Term {
 			// 修改自身状态
 			rf.term = args.Term
 			rf.role = Follower
@@ -414,8 +415,6 @@ func (rf *Raft) heartBeat() {
 			LeaderCommit: rf.CommitIndex,
 		}
 		wg := sync.WaitGroup{}
-		grantCount := atomic.Int64{}
-		grantCount.Add(1)
 		for index, _ := range rf.peers {
 			if index == rf.me {
 				continue
@@ -430,7 +429,7 @@ func (rf *Raft) heartBeat() {
 					defer rf.mu.Unlock()
 					rf.role = Follower
 					rf.term = reply.Term
-					rf.LastHeartBeatTime = time.Now().UnixMilli()
+					// rf.LastHeartBeatTime = time.Now().UnixMilli()
 				}
 			}()
 		}
@@ -462,7 +461,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.term = -1
 	rf.voteFor = -1
 	rf.role = Follower
-	rf.LastHeartBeatTime = 0
+	rf.LastHeartBeatTime = time.Now().UnixMilli()
 	rf.ElectionTimeout = 150
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
