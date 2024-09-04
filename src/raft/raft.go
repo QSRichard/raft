@@ -80,14 +80,16 @@ type Raft struct {
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var isleader bool
+	var isLeader bool
+	var term int
 	defer rf.mu.Unlock()
 	// Your code here (2A).
 	rf.mu.Lock()
 	if rf.role == Leader {
-		isleader = true
+		isLeader = true
 	}
-	return int(rf.term), isleader
+	term = int(rf.term)
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -142,20 +144,14 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
 	Term         int64
 	CandidateId  int64
 	LastLogIndex int64
 	LastLogTerm  int64
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (2A).
 	Term        int64
 	VoteGranted bool
 }
@@ -165,7 +161,7 @@ type AppendEntriesArgs struct {
 	LeaderId     int64
 	PrevLogIndex int64
 	PrevLogTerm  int64
-	Entires      []byte
+	Entries      []byte
 	LeaderCommit int64
 }
 
@@ -180,12 +176,24 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if reply == nil {
-		reply = &RequestVoteReply{}
-	}
 	if args.Term < rf.term {
 		reply.Term = rf.term
 		return
+	}
+
+	if rf.role == Leader {
+		if args.Term > rf.term {
+			rf.term = args.Term
+			rf.role = Follower
+			rf.voteFor = args.CandidateId
+			reply.VoteGranted = true
+			reply.Term = args.Term
+			return
+		} else {
+			reply.Term = rf.term
+			reply.VoteGranted = false
+			return
+		}
 	}
 
 	if rf.role == Candidate {
@@ -197,12 +205,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 			rf.role = Follower
 			rf.voteFor = args.CandidateId
 			return
+		} else {
+			reply.Term = rf.term
+			reply.VoteGranted = false
+			return
 		}
 	}
 
 	if rf.role == Follower {
 		if rf.voteFor == -1 {
-			if rf.LastLogsIndex <= args.LastLogIndex && rf.LastLogsTerm <= args.LastLogTerm {
+			if rf.term < args.Term && rf.LastLogsIndex <= args.LastLogIndex && rf.LastLogsTerm <= args.LastLogTerm {
 				reply.Term = args.Term
 				reply.VoteGranted = true
 
@@ -218,6 +230,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 				rf.term = args.Term
 				rf.role = Follower
 				rf.voteFor = args.CandidateId
+			} else {
+				reply.Term = rf.term
+				reply.VoteGranted = false
 			}
 		}
 	}
@@ -384,14 +399,22 @@ func (rf *Raft) ticker() {
 					continue
 				}
 				wg.Add(1)
-				go func() {
+				go func(index int) {
 					defer wg.Done()
 					reply := &RequestVoteReply{}
 					rf.sendRequestVote(index, args, reply)
 					if reply.VoteGranted {
 						grantCount.Add(1)
+					} else {
+						if reply.Term > rf.term {
+							rf.mu.Lock()
+							rf.term = reply.Term
+							rf.role = Follower
+							rf.voteFor = -1
+							rf.mu.Unlock()
+						}
 					}
-				}()
+				}(index)
 			}
 			wg.Wait()
 			if grantCount.Load() > int64(len(rf.peers)/2) {
@@ -405,13 +428,13 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) heartBeat() {
-	if rf.role == Leader {
+	for rf.role == Leader {
 		args := &AppendEntriesArgs{
 			Term:         rf.term,
 			LeaderId:     int64(rf.me),
 			PrevLogIndex: rf.LastLogsIndex,
 			PrevLogTerm:  rf.LastLogsTerm,
-			Entires:      []byte{},
+			Entries:      []byte{},
 			LeaderCommit: rf.CommitIndex,
 		}
 		wg := sync.WaitGroup{}
@@ -420,7 +443,7 @@ func (rf *Raft) heartBeat() {
 				continue
 			}
 			wg.Add(1)
-			go func() {
+			go func(index int) {
 				defer wg.Done()
 				reply := &AppendEntriesReply{}
 				rf.sendAppendEntries(index, args, reply)
@@ -429,9 +452,10 @@ func (rf *Raft) heartBeat() {
 					defer rf.mu.Unlock()
 					rf.role = Follower
 					rf.term = reply.Term
-					// rf.LastHeartBeatTime = time.Now().UnixMilli()
+					rf.voteFor = -1
+					rf.LastHeartBeatTime = time.Now().UnixMilli()
 				}
-			}()
+			}(index)
 		}
 		wg.Wait()
 		if rf.role != Leader {
@@ -458,7 +482,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.persister = persister
 	rf.me = me
 	// Your initialization code here (2A, 2B, 2C).
-	rf.term = -1
+	rf.term = 0
 	rf.voteFor = -1
 	rf.role = Follower
 	rf.LastHeartBeatTime = time.Now().UnixMilli()
